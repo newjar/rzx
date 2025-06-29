@@ -81,6 +81,7 @@ pub fn from_bytes(bytes: &[u8]) -> RzxResult<Self> {
     header.validate()?;
     Ok(header)
 }
+
 }
 
 #[cfg(test)]

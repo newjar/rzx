@@ -155,6 +155,7 @@ pub struct RzxReader<R: Read + Seek> {
     header: RzxHeader,
     metadata: ArchiveMetadata,
     encryption_key: Option<[u8; 32]>,
+    data_section_start_offset: u64,
 }
 
 impl<R: Read + Seek> RzxReader<R> {
@@ -181,18 +182,38 @@ impl<R: Read + Seek> RzxReader<R> {
             ))?;
 
         let salt = if encryption_algorithm != EncryptionAlgorithm::None {
+            let mut salt_tag = [0u8; 1];
+            reader.read_exact(&mut salt_tag)?;
+            if salt_tag[0] != 1 {
+                return Err(RzxError::CorruptedArchive(format!("Invalid salt option tag for encrypted archive: expected 1, got {}", salt_tag[0])));
+            }
             let mut salt_bytes = [0; SALT_SIZE];
             reader.read_exact(&mut salt_bytes)?;
             Some(salt_bytes)
         } else {
+            let mut salt_tag = [0u8; 1];
+            reader.read_exact(&mut salt_tag)?; // Read the None tag
+            if salt_tag[0] != 0 {
+                return Err(RzxError::CorruptedArchive(format!("Invalid salt option tag for unencrypted archive: expected 0, got {}", salt_tag[0])));
+            }
             None
         };
 
         let nonce = if encryption_algorithm != EncryptionAlgorithm::None {
+            let mut nonce_tag = [0u8; 1];
+            reader.read_exact(&mut nonce_tag)?;
+            if nonce_tag[0] != 1 {
+                return Err(RzxError::CorruptedArchive(format!("Invalid nonce option tag for encrypted archive: expected 1, got {}", nonce_tag[0])));
+            }
             let mut nonce_bytes = [0; NONCE_SIZE];
             reader.read_exact(&mut nonce_bytes)?;
             Some(nonce_bytes)
         } else {
+            let mut nonce_tag = [0u8; 1];
+            reader.read_exact(&mut nonce_tag)?; // Read the None tag
+            if nonce_tag[0] != 0 {
+                return Err(RzxError::CorruptedArchive(format!("Invalid nonce option tag for unencrypted archive: expected 0, got {}", nonce_tag[0])));
+            }
             None
         };
 
@@ -218,6 +239,8 @@ impl<R: Read + Seek> RzxReader<R> {
         reader.read_exact(&mut metadata_checksum_bytes)?;
         let metadata_checksum = u32::from_le_bytes(metadata_checksum_bytes);
 
+        let data_section_start_offset = reader.seek(SeekFrom::Current(0))?;
+
         let header = RzxHeader::new(
             encryption_algorithm,
             salt,
@@ -227,9 +250,35 @@ impl<R: Read + Seek> RzxReader<R> {
             metadata_checksum,
         );
 
+        // Debugging the metadata seek
+        println!(
+            "Debug RzxReader::new: header.metadata_offset = {}, header.metadata_size = {}",
+            header.metadata_offset, header.metadata_size
+        );
+        let current_pos_before_meta_seek_info = reader.seek(SeekFrom::Current(0))?;
+        let file_size_check = reader.seek(SeekFrom::End(0))?;
+        println!(
+            "Debug RzxReader::new: Archive current pos before meta seek info: {}, total size for check = {}",
+            current_pos_before_meta_seek_info, file_size_check
+        );
+        // Restore position to where data_section_start_offset was determined,
+        // as this is the logical end of fixed header before variable metadata seek.
+        reader.seek(SeekFrom::Start(data_section_start_offset))?;
+
+
+        if header.metadata_offset + header.metadata_size > file_size_check {
+            eprintln!(
+                "Error: Metadata section out of bounds. Offset: {}, Size: {}, ArchiveSize: {}",
+                header.metadata_offset, header.metadata_size, file_size_check
+            );
+            return Err(RzxError::CorruptedArchive("Metadata section out of bounds".to_string()));
+        }
+
         reader.seek(SeekFrom::Start(header.metadata_offset))?;
+        println!("Debug RzxReader::new: Successfully seeked to metadata_offset: {}", header.metadata_offset);
         let mut metadata_bytes = vec![0; header.metadata_size as usize];
         reader.read_exact(&mut metadata_bytes)?;
+        println!("Debug RzxReader::new: Successfully read {} metadata_bytes", metadata_bytes.len());
 
         let mut decrypted_metadata_bytes = Vec::new();
         if encryption_algorithm != EncryptionAlgorithm::None {
@@ -257,6 +306,7 @@ impl<R: Read + Seek> RzxReader<R> {
             header,
             metadata,
             encryption_key,
+            data_section_start_offset,
         })
     }
 
@@ -272,7 +322,45 @@ impl<R: Read + Seek> RzxReader<R> {
             return Ok(());
         }
 
-        self.reader.seek(SeekFrom::Start(entry.data_offset))?;
+        let total_archive_size = self.reader.seek(SeekFrom::End(0))?;
+        self.reader.seek(SeekFrom::Start(0))?; // Reset seek to start for relative calculations if any part of reader needs it. Or rather, restore position before this block.
+                                               // Better to record original position if needed, but for this specific function, we are about to seek to data.
+
+        let absolute_target_offset = self.data_section_start_offset + entry.data_offset;
+        println!(
+            "Debug extract_file: data_section_start_offset: {}, entry.data_offset: {}, absolute_target_offset: {}",
+            self.data_section_start_offset, entry.data_offset, absolute_target_offset
+        );
+        println!(
+            "Debug extract_file: entry.compressed_size: {}, total_archive_size: {}",
+            entry.compressed_size, total_archive_size
+        );
+
+        if absolute_target_offset + entry.compressed_size > total_archive_size {
+            eprintln!(
+                "Error: Read would go out of bounds. Offset: {}, CompressedSize: {}, ArchiveSize: {}",
+                absolute_target_offset, entry.compressed_size, total_archive_size
+            );
+            return Err(RzxError::CorruptedArchive("File entry data out of bounds".to_string()));
+        }
+
+        let original_pos_before_seek = self.reader.seek(SeekFrom::Current(0))?; // Should be after header read, before metadata seek for this reader instance
+        self.reader.seek(SeekFrom::Start(absolute_target_offset))?;
+        let pos_after_seek = self.reader.seek(SeekFrom::Current(0))?;
+        println!("Debug extract_file: Original pos: {}, Positioned to {} for entry data", original_pos_before_seek, pos_after_seek);
+
+
+        // Test read a single byte
+        // let mut test_byte = [0u8; 1];
+        // match self.reader.read_exact(&mut test_byte) {
+        //     Ok(_) => println!("Successfully read a test byte: {:?}", test_byte),
+        //     Err(e) => {
+        //         eprintln!("Failed to read test byte: {}", e);
+        //         return Err(RzxError::Io(e));
+        //     }
+        // }
+        // self.reader.seek(SeekFrom::Start(pos_after_seek))?; // Seek back
+
         let mut encrypted_data = Vec::new();
         let mut limited_reader = self.reader.by_ref().take(entry.compressed_size);
         limited_reader.read_to_end(&mut encrypted_data)?;
@@ -295,21 +383,31 @@ impl<R: Read + Seek> RzxReader<R> {
         if let Some(parent) = output_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let mut output_file = File::create(output_path)?;
-        crate::core::compression::decompress(
-            entry.compression,
-            &mut compressed_data.as_ref(),
-            &mut output_file,
-        )?;
+        let mut input_stream = std::io::BufReader::<&[u8]>::new(compressed_data.as_ref());
+        {
+            let mut output_file = File::create(output_path)?;
+            crate::core::compression::decompress(
+                entry.compression,
+                &mut input_stream,
+                &mut output_file,
+            )?;
+            // output_file is dropped here, ensuring it's flushed and closed.
+        }
 
         // Re-calculate checksum to verify integrity after decompression
         let mut decompressed_data = Vec::new();
         let mut temp_file = File::open(output_path)?;
         temp_file.read_to_end(&mut decompressed_data)?;
 
-        let mut hasher = Hasher::new();
-        hasher.update(&decompressed_data);
-        if hasher.finalize() != entry.checksum {
+        let calculated_checksum = {
+            let mut hasher = Hasher::new();
+            hasher.update(&decompressed_data);
+            hasher.finalize()
+        };
+
+        if calculated_checksum != entry.checksum {
+            // If checksum fails, it's useful to know what the actual checksum was
+            eprintln!("Checksum mismatch for {:?}: expected {:x}, got {:x}", output_path, entry.checksum, calculated_checksum);
             return Err(RzxError::ChecksumMismatch);
         }
 
