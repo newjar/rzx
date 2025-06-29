@@ -437,29 +437,26 @@ pub fn extract_archive(
         .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta}) {msg}")?
         .progress_chars("#>- "));
 
-    entries.par_iter().for_each(|entry| {
+    for entry in entries {
         let output_path = output_dir.join(&entry.path);
+        println!("Debug: output_dir: {:?}", output_dir);
+        println!("Debug: entry.path: {:?}", entry.path);
+        println!("Debug: constructed output_path: {:?}", output_path);
 
         if output_path.exists() && !overwrite {
             pb.abandon_with_message(format!("Error: File already exists: {:?}", output_path));
-            // This is a problem for parallel processing, as we can't return an error directly.
-            // For now, we'll just print and skip, but a better error handling strategy is needed for parallel operations.
-            return;
+            return Err(RzxError::Io(io::Error::new(io::ErrorKind::AlreadyExists, format!("File already exists: {:?}", output_path))));
         }
 
         pb.set_message(format!("Extracting {}", entry.display_name()));
-        // Need to create a new RzxReader for each thread, or pass a thread-safe reader.
-        // For simplicity, let's assume the reader can be cloned or re-opened for each thread.
-        // This is not ideal for performance, but demonstrates parallelism.
-        // A better approach would be to read all compressed data into memory first, then decompress in parallel.
-        // Or, use a mutex around the reader if it's shared.
-        // For now, let's re-open the file for each entry, which is inefficient but safe.
-        let file = File::open(archive_path).unwrap();
-        let mut thread_reader = RzxReader::new(file, password).unwrap();
+        
+        // Re-open the file for each entry, which is inefficient but safe for sequential processing.
+        let file = File::open(archive_path)?;
+        let mut thread_reader = RzxReader::new(file, password)?;
 
-        thread_reader.extract_file(entry, &output_path).unwrap();
+        thread_reader.extract_file(&entry, &output_path)?;
         pb.inc(1);
-    });
+    }
 
     pb.finish_with_message("Extraction complete.");
 

@@ -52,6 +52,7 @@ impl FileEntry {
     #[allow(dead_code)]
 pub fn new<P: AsRef<Path>>(path: P) -> Self {
     let path = path.as_ref().to_path_buf();
+    println!("Debug: FileEntry::new - input path: {:?}", path);
     let file_type = path
         .extension()
         .and_then(|ext| ext.to_str())
