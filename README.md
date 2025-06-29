@@ -17,8 +17,8 @@ A modern, fast compression tool written in Rust with native support for the `.rz
 ### From Source
 
 ```bash
-git clone https://github.com/yourusername/rzx-compressor.git
-cd rzx-compressor
+git clone https://github.com/yourusername/rzx.git
+cd rzx
 cargo build --release
 ```
 
@@ -27,7 +27,7 @@ The binary will be available at `target/release/rzx`
 ### Using Cargo
 
 ```bash
-cargo install rzx-compressor
+cargo install rzx
 ```
 
 ## Usage

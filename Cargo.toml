@@ -4,15 +4,15 @@ version = "0.1.0"
 edition = "2021"
 authors = ["Nurul Fajar <nurulfajar@protonmail.com>"]
 description = "A modern, fast compression tool with .rzx format support"
-license = "MIT OR Apache-2.0"
+license = "MIT"
 readme = "README.md"
 repository = "https://github.com/newjar/rzx"
 keywords = ["compression", "archive", "cli"]
 categories = ["command-line-utilities", "compression"]
 
-[[bin]]
+[lib]
 name = "rzx"
-path = "src/main.rs"
+path = "src/lib.rs"
 
 [dependencies]
 # CLI framework
@@ -29,6 +29,13 @@ bincode = "1.3"
 
 # Concurrency
 rayon = "1.8"
+
+# Encryption
+aes-gcm = "0.10"
+pbkdf2 = "0.12"
+hmac = "0.11"
+rand = { version = "0.8", features = ["std"] }
+sha2 = "0.10"
 
 # Progress bars
 indicatif = "0.17"
@@ -70,6 +77,6 @@ panic = "abort"
 opt-level = 0
 debug = true
 
-# [[bench]]
-# name = "compression_benchmark"
-# harness = false
+[[bench]]
+name = "compression_benchmark"
+harness = false
